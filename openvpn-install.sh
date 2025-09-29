@@ -4,87 +4,8 @@
 #
 # Copyright (c) 2013 Nyr. Released under the MIT License.
 
-
-# Detect Debian users running the script with "sh" instead of bash
-if readlink /proc/$$/exe | grep -q "dash"; then
-	echo 'This installer needs to be run with "bash", not "sh".'
-	exit
-fi
-
-# Discard stdin. Needed when running from a one-liner which includes a newline
-read -N 999999 -t 0.001
-
-# Detect OS
-# $os_version variables aren't always in use, but are kept here for convenience
-if grep -qs "ubuntu" /etc/os-release; then
-	os="ubuntu"
-	os_version=$(grep 'VERSION_ID' /etc/os-release | cut -d '"' -f 2 | tr -d '.')
-	group_name="nogroup"
-elif [[ -e /etc/debian_version ]]; then
-	os="debian"
-	os_version=$(grep -oE '[0-9]+' /etc/debian_version | head -1)
-	group_name="nogroup"
-elif [[ -e /etc/almalinux-release || -e /etc/rocky-release || -e /etc/centos-release ]]; then
-	os="centos"
-	os_version=$(grep -shoE '[0-9]+' /etc/almalinux-release /etc/rocky-release /etc/centos-release | head -1)
-	group_name="nobody"
-elif [[ -e /etc/fedora-release ]]; then
-	os="fedora"
-	os_version=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
-	group_name="nobody"
-else
-	echo "This installer seems to be running on an unsupported distribution.
-Supported distros are Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora."
-	exit
-fi
-
-if [[ "$os" == "ubuntu" && "$os_version" -lt 2204 ]]; then
-	echo "Ubuntu 22.04 or higher is required to use this installer.
-This version of Ubuntu is too old and unsupported."
-	exit
-fi
-
-if [[ "$os" == "debian" ]]; then
-	if grep -q '/sid' /etc/debian_version; then
-		echo "Debian Testing and Debian Unstable are unsupported by this installer."
-		exit
-	fi
-	if [[ "$os_version" -lt 11 ]]; then
-		echo "Debian 11 or higher is required to use this installer.
-This version of Debian is too old and unsupported."
-		exit
-	fi
-fi
-
-if [[ "$os" == "centos" && "$os_version" -lt 9 ]]; then
-	os_name=$(sed 's/ release.*//' /etc/almalinux-release /etc/rocky-release /etc/centos-release 2>/dev/null | head -1)
-	echo "$os_name 9 or higher is required to use this installer.
-This version of $os_name is too old and unsupported."
-	exit
-fi
-
-# Detect environments where $PATH does not include the sbin directories
-if ! grep -q sbin <<< "$PATH"; then
-	echo '$PATH does not include sbin. Try using "su -" instead of "su".'
-	exit
-fi
-
-if [[ "$EUID" -ne 0 ]]; then
-	echo "This installer needs to be run with superuser privileges."
-	exit
-fi
-
-if [[ ! -e /dev/net/tun ]] || ! ( exec 7<>/dev/net/tun ) 2>/dev/null; then
-	echo "The system does not have the TUN device available.
-TUN needs to be enabled before running this installer."
-	exit
-fi
-
-# Store the absolute path of the directory where the script is located
-script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-
-if [[ ! -e /etc/openvpn/server/server.conf ]]; then
-	# Detect some Debian minimal setups where neither wget nor curl are installed
+function install_openvpn() {
+		# Detect some Debian minimal setups where neither wget nor curl are installed
 	if ! hash wget 2>/dev/null && ! hash curl 2>/dev/null; then
 		echo "Wget is required to use this installer."
 		read -n1 -r -p "Press any key to install Wget and continue..."
@@ -205,6 +126,12 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 		done
 	fi
 	echo
+	echo "Choose a name for the first profile:"
+	read -p "Name: [default]: " first_profile
+	# Allow a limited set of characters to avoid conflicts
+	first_profile=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$first_profile")
+	[[ -z "$first_profile" ]] && first_profile="default"
+	echo
 	echo "Enter a name for the first client:"
 	read -p "Name [client]: " unsanitized_client
 	# Allow a limited set of characters to avoid conflicts
@@ -228,8 +155,7 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 	# If running inside a container, disable LimitNPROC to prevent conflicts
 	if systemd-detect-virt -cq; then
 		mkdir /etc/systemd/system/openvpn-server@server.service.d/ 2>/dev/null
-		echo "[Service]
-LimitNPROC=infinity" > /etc/systemd/system/openvpn-server@server.service.d/disable-limitnproc.conf
+		echo -ne "[Service]\nLimitNPROC=infinity\n" > /etc/systemd/system/openvpn-server@server.service.d/disable-limitnproc.conf
 	fi
 	if [[ "$os" = "debian" || "$os" = "ubuntu" ]]; then
 		apt-get update
@@ -268,7 +194,7 @@ ssbzSibBsu/6iGtCOGEoXJf//////////wIBAg==
 	ln -s /etc/openvpn/server/dh.pem pki/dh.pem
 	# Create certificates and CRL
 	./easyrsa --batch --days=3650 build-server-full server nopass
-	./easyrsa --batch --days=3650 build-client-full "$client" nopass
+	./easyrsa --batch --days=3650 build-client-full "$client-$first_profile" nopass
 	./easyrsa --batch --days=3650 gen-crl
 	# Move the stuff we need
 	cp pki/ca.crt pki/private/ca.key pki/issued/server.crt pki/private/server.key pki/crl.pem /etc/openvpn/server
@@ -289,7 +215,8 @@ dh dh.pem
 auth SHA512
 tls-crypt tc.key
 topology subnet
-server 10.8.0.0 255.255.255.0" > /etc/openvpn/server/server.conf
+client-config-dir /etc/openvpn/server/ccd
+server 10.8.0.0 255.255.0.0" > /etc/openvpn/server/server.conf
 	# IPv6
 	if [[ -z "$ip6" ]]; then
 		echo 'push "redirect-gateway def1 bypass-dhcp"' >> /etc/openvpn/server/server.conf
@@ -370,12 +297,12 @@ crl-verify crl.pem" >> /etc/openvpn/server/server.conf
 		# We don't use --add-service=openvpn because that would only work with
 		# the default port and protocol.
 		firewall-cmd --add-port="$port"/"$protocol"
-		firewall-cmd --zone=trusted --add-source=10.8.0.0/24
+		firewall-cmd --zone=trusted --add-source=10.8.0.0/16
 		firewall-cmd --permanent --add-port="$port"/"$protocol"
-		firewall-cmd --permanent --zone=trusted --add-source=10.8.0.0/24
+		firewall-cmd --permanent --zone=trusted --add-source=10.8.0.0/16
 		# Set NAT for the VPN subnet
-		firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/24 ! -d 10.8.0.0/24 -j SNAT --to "$ip"
-		firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/24 ! -d 10.8.0.0/24 -j SNAT --to "$ip"
+		firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/16 ! -d 10.8.0.0/16 -j SNAT --to "$ip"
+		firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/16 ! -d 10.8.0.0/16 -j SNAT --to "$ip"
 		if [[ -n "$ip6" ]]; then
 			firewall-cmd --zone=trusted --add-source=fddd:1194:1194:1194::/64
 			firewall-cmd --permanent --zone=trusted --add-source=fddd:1194:1194:1194::/64
@@ -397,13 +324,13 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Type=oneshot
-ExecStart=$iptables_path -w 5 -t nat -A POSTROUTING -s 10.8.0.0/24 ! -d 10.8.0.0/24 -j SNAT --to $ip
+ExecStart=$iptables_path -w 5 -t nat -A POSTROUTING -s 10.8.0.0/16 ! -d 10.8.0.0/16 -j SNAT --to $ip
 ExecStart=$iptables_path -w 5 -I INPUT -p $protocol --dport $port -j ACCEPT
-ExecStart=$iptables_path -w 5 -I FORWARD -s 10.8.0.0/24 -j ACCEPT
+ExecStart=$iptables_path -w 5 -I FORWARD -s 10.8.0.0/16 -j ACCEPT
 ExecStart=$iptables_path -w 5 -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ExecStop=$iptables_path -w 5 -t nat -D POSTROUTING -s 10.8.0.0/24 ! -d 10.8.0.0/24 -j SNAT --to $ip
+ExecStop=$iptables_path -w 5 -t nat -D POSTROUTING -s 10.8.0.0/16 ! -d 10.8.0.0/16 -j SNAT --to $ip
 ExecStop=$iptables_path -w 5 -D INPUT -p $protocol --dport $port -j ACCEPT
-ExecStop=$iptables_path -w 5 -D FORWARD -s 10.8.0.0/24 -j ACCEPT
+ExecStop=$iptables_path -w 5 -D FORWARD -s 10.8.0.0/16 -j ACCEPT
 ExecStop=$iptables_path -w 5 -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT" > /etc/systemd/system/openvpn-iptables.service
 		if [[ -n "$ip6" ]]; then
 			echo "ExecStart=$ip6tables_path -w 5 -t nat -A POSTROUTING -s fddd:1194:1194:1194::/64 ! -d fddd:1194:1194:1194::/64 -j SNAT --to $ip6
@@ -441,15 +368,210 @@ remote-cert-tls server
 auth SHA512
 ignore-unknown-option block-outside-dns
 verb 3" > /etc/openvpn/server/client-common.txt
+	echo "10.8.0.0 $first_profile" > /etc/openvpn/server/profiles.txt
+	mkdir -p /etc/openvpn/server/ccd
 	# Enable and start the OpenVPN service
 	systemctl enable --now openvpn-server@server.service
 	# Build the $client.ovpn file, stripping comments from easy-rsa in the process
-	grep -vh '^#' /etc/openvpn/server/client-common.txt /etc/openvpn/server/easy-rsa/pki/inline/private/"$client".inline > "$script_dir"/"$client".ovpn
-	echo
+	grep -vh '^#' /etc/openvpn/server/client-common.txt /etc/openvpn/server/easy-rsa/pki/inline/private/"$client-$first_profile".inline > "$script_dir"/"$client-$first_profile".ovpn
+	echo "ifconfig-push 10.8.0.2 255.255.0.0" > /etc/openvpn/server/ccd/"$client-$first_profile"
+	chmod 600 /etc/openvpn/server/ccd/"$client-$first_profile"
 	echo "Finished!"
 	echo
-	echo "The client configuration is available in:" "$script_dir"/"$client.ovpn"
+	echo "The client configuration is available in:" "$script_dir"/"$client-$first_profile.ovpn"
 	echo "New clients can be added by running this script again."
+}
+
+
+function detect_sys_environment() {
+	# Detect Debian users running the script with "sh" instead of bash
+	if readlink /proc/$$/exe | grep -q "dash"; then
+		echo 'This installer needs to be run with "bash", not "sh".'
+		exit
+	fi
+
+	# Discard stdin. Needed when running from a one-liner which includes a newline
+	read -N 999999 -t 0.001
+
+	# Detect OS
+	# $os_version variables aren't always in use, but are kept here for convenience
+	if grep -qs "ubuntu" /etc/os-release; then
+		os="ubuntu"
+		os_version=$(grep 'VERSION_ID' /etc/os-release | cut -d '"' -f 2 | tr -d '.')
+		group_name="nogroup"
+	elif [[ -e /etc/debian_version ]]; then
+		os="debian"
+		os_version=$(grep -oE '[0-9]+' /etc/debian_version | head -1)
+		group_name="nogroup"
+	elif [[ -e /etc/almalinux-release || -e /etc/rocky-release || -e /etc/centos-release ]]; then
+		os="centos"
+		os_version=$(grep -shoE '[0-9]+' /etc/almalinux-release /etc/rocky-release /etc/centos-release | head -1)
+		group_name="nobody"
+	elif [[ -e /etc/fedora-release ]]; then
+		os="fedora"
+		os_version=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
+		group_name="nobody"
+	else
+		echo "This installer seems to be running on an unsupported distribution.
+		Supported distros are Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora."
+			exit
+	fi
+
+	if [[ "$os" == "ubuntu" && "$os_version" -lt 2204 ]]; then
+		echo "Ubuntu 22.04 or higher is required to use this installer.
+	This version of Ubuntu is too old and unsupported."
+		exit
+	fi
+
+	if [[ "$os" == "debian" ]]; then
+		if grep -q '/sid' /etc/debian_version; then
+			echo "Debian Testing and Debian Unstable are unsupported by this installer."
+			exit
+		fi
+		if [[ "$os_version" -lt 11 ]]; then
+			echo "Debian 11 or higher is required to use this installer.
+	This version of Debian is too old and unsupported."
+			exit
+		fi
+	fi
+
+	if [[ "$os" == "centos" && "$os_version" -lt 9 ]]; then
+		os_name=$(sed 's/ release.*//' /etc/almalinux-release /etc/rocky-release /etc/centos-release 2>/dev/null | head -1)
+		echo "$os_name 9 or higher is required to use this installer.
+	This version of $os_name is too old and unsupported."
+		exit
+	fi
+
+	# Detect environments where $PATH does not include the sbin directories
+	if ! grep -q sbin <<< "$PATH"; then
+		echo '$PATH does not include sbin. Try using "su -" instead of "su".'
+		exit
+	fi
+
+	if [[ "$EUID" -ne 0 ]]; then
+		echo "This installer needs to be run with superuser privileges."
+		exit
+	fi
+
+	if [[ ! -e /dev/net/tun ]] || ! ( exec 7<>/dev/net/tun ) 2>/dev/null; then
+		echo "The system does not have the TUN device available.
+	TUN needs to be enabled before running this installer."
+		exit
+	fi
+}
+
+detect_sys_environment
+# Store the absolute path of the directory where the script is located
+script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+function create_profile() {
+	profiles_file="/etc/openvpn/server/profiles.txt"
+
+	echo
+	echo "Provide a name for the profile:"
+	read -p "Name: " unsanitized_profile
+	profile=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_profile")
+		# If there are no profiles yet, create the first one
+	if [[ ! -s "$profiles_file" ]]; then
+		echo
+		echo "No profiles found. Creating the first profile."
+		echo "10.8.0.0 $profile" > "$profiles_file"
+		return
+	fi
+	while [[ -z "$profile" ]] || grep -q "$profile" "$profiles_file"; do
+		echo "$profile: invalid name."
+		read -p "Name: " unsanitized_profile
+		profile=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_profile")
+	done
+	last_ip_range="$(grep -v '^[[:space:]]*$' /etc/openvpn/server/profiles.txt | tail -n 1)"
+	IFS=. read -r o1 o2 o3 o4 <<< "$last_ip_range"
+	if [[ "$o3" -eq 255 ]]; then
+		echo "No more available IP addresses ranges left for new profiles."
+		exit
+	fi
+	o3=$((o3+1))
+	new_ip_range="10.8.$o3.0"
+	echo
+	echo "$new_ip_range $profile" >> "$profiles_file"
+}
+
+function get_ip_range_for_profile() {
+        local profile_input="$1"
+
+        while read -r ip_range right; do
+        # skip empty lines
+        [[ -z "$right" ]] && continue
+
+        if [[ "$profile_input" == "$right" ]]; then
+                echo "$ip_range"
+                return
+        fi
+        done < /etc/openvpn/server/profiles.txt
+        echo "Profile $profile_input not found" >&2
+        exit 1
+}
+
+function get_available_ip_for_profile() {
+        local profile_input="$1"
+
+				local client_configs="$(ls /etc/openvpn/server/ccd/ 2>/dev/null)"
+				local used_ips=""
+				for config in $client_configs; do
+					local ip_in_config="$(cat /etc/openvpn/server/ccd/$config | cut -d ' ' -f 2)"
+					used_ips="$used_ips $ip_in_config"
+				done
+				local ip_range
+				ip_range="$(get_ip_range_for_profile "$profile_input")"
+				IFS=. read -r o1 o2 o3 o4 <<< "$ip_range"
+				o4=$((o4+2)) # Start at .2, as .1 is usually the server gateway
+				while [[ $o4 -lt 255 ]]; do
+								local candidate_ip="$o1.$o2.$o3.$o4"
+								if ! grep -qw "$candidate_ip" <<< "$used_ips"; then
+												echo "$candidate_ip"
+												return
+								fi
+								o4=$((o4+1))
+				done
+				echo "No available IP addresses left for profile $profile_input" >&2
+				exit 1
+}
+
+function create_client() {
+	echo
+	echo "Available profiles:"
+	grep -v '^[[:space:]]*$' /etc/openvpn/server/profiles.txt | cut -d ' ' -f 2 | nl -s ') '
+	read -p "Select a profile [1]: " profile
+	number_of_profiles=$(grep -cve '^[[:space:]]*$' /etc/openvpn/server/profiles.txt)
+	until [[ -z "$profile" || "$profile" =~ ^[0-9]+$ && "$profile" -le "$number_of_profiles" ]]; do
+		echo "$profile: invalid selection."
+		read -p "Select a profile [1]: " profile
+	done
+	[[ -z "$profile" ]] && profile="1"
+	profile=$(sed -n "$profile"p /etc/openvpn/server/profiles.txt | cut -d ' ' -f 2)
+
+	echo
+	echo "Provide a name for the client:"
+	read -p "Name: " unsanitized_client
+	client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
+	file_basename="$client-$profile"
+	while [[ -z "$client" || -e /etc/openvpn/server/easy-rsa/pki/issued/"$file_basename".crt ]]; do
+		echo "$client: invalid name."
+		read -p "Name: " unsanitized_client
+		client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
+		file_basename="$client-$profile"
+	done
+	cd /etc/openvpn/server/easy-rsa/
+	./easyrsa --batch --days=3650 build-client-full "$file_basename" nopass
+	# Build the $client.ovpn file, stripping comments from easy-rsa in the process
+	grep -vh '^#' /etc/openvpn/server/client-common.txt /etc/openvpn/server/easy-rsa/pki/inline/private/"$file_basename".inline > "$script_dir"/"$file_basename".ovpn
+	local ip="$(get_available_ip_for_profile "$profile")"
+	echo "ifconfig-push $ip 255.255.0.0" > /etc/openvpn/server/ccd/"$file_basename"
+	echo
+	echo "$client added. Configuration available in:" "$script_dir"/"$file_basename.ovpn"
+}
+
+if [[ ! -e /etc/openvpn/server/server.conf ]]; then
+	install_openvpn
 else
 	clear
 	echo "OpenVPN is already installed."
@@ -457,8 +579,9 @@ else
 	echo "Select an option:"
 	echo "   1) Add a new client"
 	echo "   2) Revoke an existing client"
-	echo "   3) Remove OpenVPN"
-	echo "   4) Exit"
+	echo "   3) Add a profile"
+	echo "   4) Remove OpenVPN"
+	echo "   5) Exit"
 	read -p "Option: " option
 	until [[ "$option" =~ ^[1-4]$ ]]; do
 		echo "$option: invalid selection."
@@ -466,21 +589,7 @@ else
 	done
 	case "$option" in
 		1)
-			echo
-			echo "Provide a name for the client:"
-			read -p "Name: " unsanitized_client
-			client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
-			while [[ -z "$client" || -e /etc/openvpn/server/easy-rsa/pki/issued/"$client".crt ]]; do
-				echo "$client: invalid name."
-				read -p "Name: " unsanitized_client
-				client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
-			done
-			cd /etc/openvpn/server/easy-rsa/
-			./easyrsa --batch --days=3650 build-client-full "$client" nopass
-			# Build the $client.ovpn file, stripping comments from easy-rsa in the process
-			grep -vh '^#' /etc/openvpn/server/client-common.txt /etc/openvpn/server/easy-rsa/pki/inline/private/"$client".inline > "$script_dir"/"$client".ovpn
-			echo
-			echo "$client added. Configuration available in:" "$script_dir"/"$client.ovpn"
+			create_client
 			exit
 		;;
 		2)
@@ -526,6 +635,10 @@ else
 			exit
 		;;
 		3)
+			create_profile
+			exit
+		;;
+		4)
 			echo
 			read -p "Confirm OpenVPN removal? [y/N]: " remove
 			until [[ "$remove" =~ ^[yYnN]*$ ]]; do
@@ -536,14 +649,14 @@ else
 				port=$(grep '^port ' /etc/openvpn/server/server.conf | cut -d " " -f 2)
 				protocol=$(grep '^proto ' /etc/openvpn/server/server.conf | cut -d " " -f 2)
 				if systemctl is-active --quiet firewalld.service; then
-					ip=$(firewall-cmd --direct --get-rules ipv4 nat POSTROUTING | grep '\-s 10.8.0.0/24 '"'"'!'"'"' -d 10.8.0.0/24' | grep -oE '[^ ]+$')
+					ip=$(firewall-cmd --direct --get-rules ipv4 nat POSTROUTING | grep '\-s 10.8.0.0/16 '"'"'!'"'"' -d 10.8.0.0/16' | grep -oE '[^ ]+$')
 					# Using both permanent and not permanent rules to avoid a firewalld reload.
 					firewall-cmd --remove-port="$port"/"$protocol"
-					firewall-cmd --zone=trusted --remove-source=10.8.0.0/24
+					firewall-cmd --zone=trusted --remove-source=10.8.0.0/16
 					firewall-cmd --permanent --remove-port="$port"/"$protocol"
-					firewall-cmd --permanent --zone=trusted --remove-source=10.8.0.0/24
-					firewall-cmd --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/24 ! -d 10.8.0.0/24 -j SNAT --to "$ip"
-					firewall-cmd --permanent --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/24 ! -d 10.8.0.0/24 -j SNAT --to "$ip"
+					firewall-cmd --permanent --zone=trusted --remove-source=10.8.0.0/16
+					firewall-cmd --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/16 ! -d 10.8.0.0/16 -j SNAT --to "$ip"
+					firewall-cmd --permanent --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.8.0.0/16 ! -d 10.8.0.0/16 -j SNAT --to "$ip"
 					if grep -qs "server-ipv6" /etc/openvpn/server/server.conf; then
 						ip6=$(firewall-cmd --direct --get-rules ipv6 nat POSTROUTING | grep '\-s fddd:1194:1194:1194::/64 '"'"'!'"'"' -d fddd:1194:1194:1194::/64' | grep -oE '[^ ]+$')
 						firewall-cmd --zone=trusted --remove-source=fddd:1194:1194:1194::/64
@@ -577,7 +690,7 @@ else
 			fi
 			exit
 		;;
-		4)
+		5)
 			exit
 		;;
 	esac

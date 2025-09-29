@@ -1,5 +1,11 @@
 **New: [wireguard-install](https://github.com/Nyr/wireguard-install) is also available.**
 
+## Fork
+
+This version of Nyr's openvpn-install.sh just adds a feature to use client-config-dir.
+A new option has been added, to specify a named profile to use for each client, which allows to place each client in a different ipv4 range.
+This allows easy iptable use to allow access or restrict certain client profiles to network resources.
+
 ## openvpn-install
 OpenVPN [road warrior](http://en.wikipedia.org/wiki/Road_warrior_%28computing%29) installer for Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora.
 
