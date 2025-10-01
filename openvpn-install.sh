@@ -370,12 +370,13 @@ ignore-unknown-option block-outside-dns
 verb 3" > /etc/openvpn/server/client-common.txt
 	echo "10.8.0.0 $first_profile" > /etc/openvpn/server/profiles.txt
 	mkdir -p /etc/openvpn/server/ccd
+	chown root:nogroup /etc/openvpn/server/ccd
 	# Enable and start the OpenVPN service
 	systemctl enable --now openvpn-server@server.service
 	# Build the $client.ovpn file, stripping comments from easy-rsa in the process
 	grep -vh '^#' /etc/openvpn/server/client-common.txt /etc/openvpn/server/easy-rsa/pki/inline/private/"$client-$first_profile".inline > "$script_dir"/"$client-$first_profile".ovpn
 	echo "ifconfig-push 10.8.0.2 255.255.0.0" > /etc/openvpn/server/ccd/"$client-$first_profile"
-	chmod 600 /etc/openvpn/server/ccd/"$client-$first_profile"
+	chmod 640 /etc/openvpn/server/ccd/"$client-$first_profile"
 	echo "Finished!"
 	echo
 	echo "The client configuration is available in:" "$script_dir"/"$client-$first_profile.ovpn"
@@ -566,6 +567,7 @@ function create_client() {
 	grep -vh '^#' /etc/openvpn/server/client-common.txt /etc/openvpn/server/easy-rsa/pki/inline/private/"$file_basename".inline > "$script_dir"/"$file_basename".ovpn
 	local ip="$(get_available_ip_for_profile "$profile")"
 	echo "ifconfig-push $ip 255.255.0.0" > /etc/openvpn/server/ccd/"$file_basename"
+	chmod 640 "/etc/openvpn/server/ccd/$file_basename"
 	echo
 	echo "$client added. Configuration available in:" "$script_dir"/"$file_basename.ovpn"
 }
@@ -626,6 +628,7 @@ else
 				cp /etc/openvpn/server/easy-rsa/pki/crl.pem /etc/openvpn/server/crl.pem
 				# CRL is read with each client connection, when OpenVPN is dropped to nobody
 				chown nobody:"$group_name" /etc/openvpn/server/crl.pem
+				rm -f /etc/openvpn/server/ccd/"$client"
 				echo
 				echo "$client revoked!"
 			else
